@@ -5,6 +5,13 @@ import {
   createMemoryHistory,
   parsePath,
 } from "history";
+import type { RouteMatch, RouteObject } from "remix-router";
+import {
+  invariant,
+  normalizePathname,
+  stripBasename,
+  warning,
+} from "remix-router";
 
 import { LocationContext, NavigationContext, Navigator } from "./context";
 import {
@@ -14,8 +21,6 @@ import {
   useRoutes,
   _renderMatches,
 } from "./hooks";
-import type { RouteMatch, RouteObject } from "./router";
-import { invariant, normalizePathname, stripBasename, warning } from "./router";
 
 export interface MemoryRouterProps {
   basename?: string;

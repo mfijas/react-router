@@ -1,5 +1,5 @@
-import type { Location, Path, To } from "history";
-import { parsePath } from "history";
+import { History, Location, Path, To } from "history";
+import { Action as NavigationType, parsePath } from "history";
 
 export function invariant(cond: any, message: string): asserts cond {
   if (!cond) throw new Error(message);
@@ -29,6 +29,131 @@ export function warningOnce(key: string, cond: boolean, message: string) {
     warning(false, message);
   }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+//#region REMIX ROUTER
+////////////////////////////////////////////////////////////////////////////////
+
+export interface AppState {
+  // Proxied from history
+  action: NavigationType;
+  location: Location;
+  // Potentially hydrated from server render
+  loaderData: Record<string, any> | null;
+  actionData: Record<string, any> | null;
+  catch: Record<string, any> | null;
+  error: Record<string, any> | null;
+  // SPA-transitions:
+  // transition: Transition
+}
+
+export interface NavigateOptions {
+  replace?: boolean;
+  state?: any;
+}
+
+export interface RemixRouter {
+  state: AppState;
+  createHref: (to: To) => string;
+  matchRoutes: (
+    locationArg: Partial<Location> | string,
+    basename?: string
+  ) => RouteMatch[] | null;
+  navigate: (path: string | Path, opts?: NavigateOptions) => void;
+  go: (n: number) => void;
+  onUpdate: (cb: () => void) => void;
+}
+
+export interface CreateRemixRouterOpts {
+  history: History;
+  routes: RouteObject[];
+  hydrationData?: AppState;
+}
+
+export function createRemixRouter({
+  history,
+  routes,
+  hydrationData,
+}: CreateRemixRouterOpts) {
+  let router: RemixRouter;
+  let updater: () => void;
+  let state: AppState = {
+    loaderData: null,
+    actionData: null,
+    catch: null,
+    error: null,
+    ...hydrationData,
+    action: history.action,
+    location: history.location,
+  };
+
+  function setState(newState: Partial<AppState>) {
+    state = {
+      ...state,
+      ...newState,
+    };
+    updater?.();
+  }
+
+  function startTransition(to?: To, updateHistory?: () => void) {
+    let newPath = to
+      ? to
+      : {
+          pathname: history.location.pathname,
+          search: history.location.search,
+          hash: history.location.hash,
+        };
+    try {
+      let matches = router.matchRoutes(newPath);
+      if (!matches) {
+        throw new Response(null, { status: 404 });
+      }
+
+      // TODO: call loaders
+    } catch (e) {
+      throw e;
+      // TODO: Set error in state
+      // setState({ error: e });
+    }
+    updateHistory?.();
+    setState({
+      action: history.action,
+      location: history.location,
+    });
+  }
+
+  // TODO: create flattened routes
+
+  history.listen(() => startTransition());
+
+  router = {
+    get state() {
+      return state;
+    },
+    createHref: history.createHref,
+    matchRoutes(locationArg, basename) {
+      return matchRoutes(routes, locationArg, basename);
+    },
+    navigate(path, opts = { replace: false, state: null }) {
+      let method: "replace" | "push" = opts.replace ? "replace" : "push";
+      startTransition(path, () => history[method](path, opts.state));
+    },
+    go(n) {
+      history.go(n);
+    },
+    onUpdate(cb) {
+      updater = cb;
+      // TODO Return function to unregister
+    },
+    // TODO: matchRoutes()
+  };
+  return router;
+}
+//#endregion
+
+////////////////////////////////////////////////////////////////////////////////
+//#region UTILS
+////////////////////////////////////////////////////////////////////////////////
 
 type ParamParseFailed = { failed: true };
 
@@ -638,3 +763,4 @@ const normalizeSearch = (search: string): string =>
 
 const normalizeHash = (hash: string): string =>
   !hash || hash === "#" ? "" : hash.startsWith("#") ? hash : "#" + hash;
+//#endregion

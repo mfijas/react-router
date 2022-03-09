@@ -1,13 +1,10 @@
 // TODO: We eventually might not want to import anything directly from `history`
 // and leverage `react-router` here instead
-import { Action } from "history";
 import type { Location } from "history";
+import { Action } from "history";
 
-import type { RouteData } from "./routeData";
-import type { RouteMatch } from "./routeMatching";
-import type { ClientRoute } from "./routes";
-import { matchClientRoutes } from "./routeMatching";
-import invariant from "./invariant";
+import type { RouteData, RouteMatch, RouteObject } from "./utils";
+import { invariant, matchRoutes } from "./utils";
 
 ////////////////////////////////////////////////////////////////////////////////
 //#region Types and Utils
@@ -30,13 +27,13 @@ export interface TransitionManagerState {
    * The current set of route matches the user sees in the browser. During a
    * transition this are the "old matches"
    */
-  matches: ClientMatch[];
+  matches: RouteMatch[];
 
   /**
    * Only used When both navigation and fetch loads are pending, the fetch loads
    * may need to use the next matches to load data.
    */
-  nextMatches?: ClientMatch[];
+  nextMatches?: RouteMatch[];
 
   /**
    * Data from the loaders that user sees in the browser. During a transition
@@ -89,7 +86,7 @@ export interface TransitionManagerState {
 }
 
 export interface TransitionManagerInit {
-  routes: ClientRoute[];
+  routes: RouteObject[];
   location: Location;
   loaderData: RouteData;
   actionData?: RouteData;
@@ -244,25 +241,23 @@ type FetcherStates<TData = any> = {
 export type Fetcher<TData = any> =
   FetcherStates<TData>[keyof FetcherStates<TData>];
 
-type ClientMatch = RouteMatch<ClientRoute>;
-
 type DataResult = {
-  match: ClientMatch;
+  match: RouteMatch;
   value: TransitionRedirect | Error | any;
 };
 
 type DataRedirectResult = {
-  match: ClientMatch;
+  match: RouteMatch;
   value: TransitionRedirect;
 };
 
 type DataErrorResult = {
-  match: ClientMatch;
+  match: RouteMatch;
   value: Error;
 };
 
 type DataCatchResult = {
-  match: ClientMatch;
+  match: RouteMatch;
   value: CatchValue;
 };
 
@@ -414,7 +409,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
   let fetchReloadIds = new Map<string, number>();
   let fetchRedirectIds = new Set<string>();
 
-  let matches = matchClientRoutes(routes, init.location);
+  let matches = matchRoutes(routes, init.location);
 
   if (!matches) {
     // If we do not match a user-provided-route, fall back to the root
@@ -423,6 +418,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
       {
         params: {},
         pathname: "",
+        pathnameBase: "",
         route: routes[0],
       },
     ];
@@ -487,13 +483,14 @@ export function createTransitionManager(init: TransitionManagerInit) {
         console.debug(
           `[transition] navigation send() - ${action} ${location.pathname}`
         );
-        let matches = matchClientRoutes(routes, location);
+        let matches = matchRoutes(routes, location);
 
         if (!matches) {
           matches = [
             {
               params: {},
               pathname: "",
+              pathnameBase: "",
               route: routes[0],
             },
           ];
@@ -556,7 +553,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
           `[transition] fetcher send() - ${event.submission?.method} ${href} (key: ${key})`
         );
 
-        let matches = matchClientRoutes(routes, href);
+        let matches = matchRoutes(routes, href);
         invariant(matches, "No matches found");
         let match = matches.slice(-1)[0];
 
@@ -599,7 +596,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
   async function handleActionFetchSubmission(
     key: string,
     submission: ActionSubmission,
-    match: ClientMatch
+    match: RouteMatch
   ) {
     let currentFetcher = state.fetchers.get(key);
 
@@ -805,7 +802,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
     href: string,
     key: string,
     submission: LoaderSubmission,
-    match: ClientMatch
+    match: RouteMatch
   ) {
     let currentFetcher = state.fetchers.get(key);
     let fetcher: FetcherStates["SubmittingLoader"] = {
@@ -859,7 +856,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
   async function handleLoaderFetch(
     href: string,
     key: string,
-    match: ClientMatch
+    match: RouteMatch
   ) {
     if (typeof AbortController === "undefined") {
       throw new Error(
@@ -916,7 +913,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
   }
 
   async function maybeBailOnCatch(
-    match: ClientMatch,
+    match: RouteMatch,
     key: string,
     result: DataResult
   ) {
@@ -939,7 +936,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
   }
 
   function maybeBailOnError(
-    match: ClientMatch,
+    match: RouteMatch,
     key: string,
     result: DataResult
   ) {
@@ -958,7 +955,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
   async function handleNotFoundNavigation(
     location: Location,
-    matches: RouteMatch<ClientRoute>[]
+    matches: RouteMatch[]
   ) {
     abortNormalNavigation();
     let transition: TransitionStates["Loading"] = {
@@ -992,7 +989,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
   async function handleActionSubmissionNavigation(
     location: Location,
     submission: ActionSubmission,
-    matches: ClientMatch[]
+    matches: RouteMatch[]
   ) {
     abortNormalNavigation();
 
@@ -1069,7 +1066,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
   async function handleLoaderSubmissionNavigation(
     location: Location,
     submission: LoaderSubmission,
-    matches: ClientMatch[]
+    matches: RouteMatch[]
   ) {
     abortNormalNavigation();
     let transition: TransitionStates["SubmittingLoader"] = {
@@ -1082,7 +1079,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
     await loadPageData(location, matches, submission);
   }
 
-  async function handleHashChange(location: Location, matches: ClientMatch[]) {
+  async function handleHashChange(location: Location, matches: RouteMatch[]) {
     abortNormalNavigation();
     let transition: TransitionStates["Loading"] = {
       state: "loading",
@@ -1103,7 +1100,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
     });
   }
 
-  async function handleLoad(location: Location, matches: ClientMatch[]) {
+  async function handleLoad(location: Location, matches: RouteMatch[]) {
     abortNormalNavigation();
     let transition: TransitionStates["Loading"] = {
       state: "loading",
@@ -1117,7 +1114,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
   async function handleLoaderRedirect(
     location: Location,
-    matches: ClientMatch[]
+    matches: RouteMatch[]
   ) {
     abortNormalNavigation();
     let transition: TransitionStates["LoadingRedirect"] = {
@@ -1132,7 +1129,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
   async function handleLoaderSubmissionRedirect(
     location: Location,
-    matches: ClientMatch[]
+    matches: RouteMatch[]
   ) {
     abortNormalNavigation();
     invariant(
@@ -1152,7 +1149,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
   async function handleFetchActionRedirect(
     location: Location,
-    matches: ClientMatch[]
+    matches: RouteMatch[]
   ) {
     abortNormalNavigation();
     let transition: TransitionStates["LoadingFetchActionRedirect"] = {
@@ -1167,7 +1164,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
   async function handleActionRedirect(
     location: Location,
-    matches: ClientMatch[]
+    matches: RouteMatch[]
   ) {
     abortNormalNavigation();
     invariant(
@@ -1196,7 +1193,7 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
   async function loadPageData(
     location: Location,
-    matches: ClientMatch[],
+    matches: RouteMatch[],
     submission?: Submission,
     submissionRouteId?: string,
     actionResult?: DataResult
@@ -1355,7 +1352,7 @@ function isIndexRequestAction(action: string) {
 async function callLoaders(
   state: TransitionManagerState,
   url: URL,
-  matches: ClientMatch[],
+  matches: RouteMatch[],
   signal: AbortSignal,
   actionErrorResult?: DataErrorResult,
   actionCatchResult?: DataCatchResult,
@@ -1379,11 +1376,13 @@ async function callLoaders(
   );
 }
 
-async function callLoader(match: ClientMatch, url: URL, signal: AbortSignal) {
+async function callLoader(match: RouteMatch, url: URL, signal: AbortSignal) {
   invariant(match.route.loader, `Expected loader for ${match.route.id}`);
   try {
-    let { params } = match;
-    let value = await match.route.loader({ params, url, signal });
+    // TODO: Fix API
+    let value = await match.route.loader();
+    // let { params } = match;
+    // let value = await match.route.loader({ params, url, signal });
     return { match, value };
   } catch (error) {
     return { match, value: error };
@@ -1392,7 +1391,7 @@ async function callLoader(match: ClientMatch, url: URL, signal: AbortSignal) {
 
 async function callAction(
   submission: ActionSubmission,
-  match: ClientMatch,
+  match: RouteMatch,
   signal: AbortSignal
 ): Promise<DataResult> {
   if (!match.route.action) {
@@ -1403,12 +1402,14 @@ async function callAction(
   }
 
   try {
-    let value = await match.route.action({
-      url: createUrl(submission.action),
-      params: match.params,
-      submission,
-      signal,
-    });
+    // TODO: Fix API
+    let value = await match.route.action();
+    // let value = await match.route.action({
+    //   url: createUrl(submission.action),
+    //   params: match.params,
+    //   submission,
+    //   signal,
+    // });
     return { match, value };
   } catch (error) {
     return { match, value: error };
@@ -1418,13 +1419,13 @@ async function callAction(
 function filterMatchesToLoad(
   state: TransitionManagerState,
   url: URL,
-  matches: ClientMatch[],
+  matches: RouteMatch[],
   actionErrorResult?: DataErrorResult,
   actionCatchResult?: DataCatchResult,
   submission?: Submission,
   submissionRouteId?: string,
   fetcher?: Fetcher
-): ClientMatch[] {
+): RouteMatch[] {
   // Filter out all routes below the problematic route as they aren't going
   // to render so we don't need to load them.
   if (submissionRouteId && (actionCatchResult || actionErrorResult)) {
@@ -1441,7 +1442,7 @@ function filterMatchesToLoad(
     });
   }
 
-  let isNew = (match: ClientMatch, index: number) => {
+  let isNew = (match: RouteMatch, index: number) => {
     // [a] -> [a, b]
     if (!state.matches[index]) return true;
 
@@ -1449,7 +1450,7 @@ function filterMatchesToLoad(
     return match.route.id !== state.matches[index].route.id;
   };
 
-  let matchPathChanged = (match: ClientMatch, index: number) => {
+  let matchPathChanged = (match: RouteMatch, index: number) => {
     return (
       // param change, /users/123 -> /users/456
       state.matches[index].pathname !== match.pathname ||
@@ -1460,7 +1461,7 @@ function filterMatchesToLoad(
     );
   };
 
-  let filterByRouteProps = (match: ClientMatch, index: number) => {
+  let filterByRouteProps = (match: RouteMatch, index: number) => {
     if (!match.route.loader) {
       return false;
     }
@@ -1470,13 +1471,15 @@ function filterMatchesToLoad(
     }
 
     if (match.route.shouldReload) {
-      let prevUrl = createUrl(createHref(state.location));
-      return match.route.shouldReload({
-        prevUrl,
-        url,
-        submission,
-        params: match.params,
-      });
+      // TODO: Fix API
+      return match.route.shouldReload();
+      // let prevUrl = createUrl(createHref(state.location));
+      // return match.route.shouldReload({
+      //   prevUrl,
+      //   url,
+      //   submission,
+      //   params: match.params,
+      // });
     }
 
     return true;
@@ -1533,7 +1536,7 @@ function findRedirect(results: DataResult[]): TransitionRedirect | null {
 
 async function findCatchAndBoundaryId(
   results: DataResult[],
-  matches: ClientMatch[],
+  matches: RouteMatch[],
   actionCatchResult?: DataCatchResult
 ): Promise<[CatchData, string | null] | [undefined, undefined]> {
   let loaderCatchResult: DataCatchResult | undefined;
@@ -1569,7 +1572,7 @@ async function findCatchAndBoundaryId(
 
 function findErrorAndBoundaryId(
   results: DataResult[],
-  matches: ClientMatch[],
+  matches: RouteMatch[],
   actionErrorResult?: DataErrorResult
 ): [Error, string | null] | [undefined, undefined] {
   let loaderErrorResult;
@@ -1603,14 +1606,18 @@ function findErrorAndBoundaryId(
 }
 
 function findNearestCatchBoundary(
-  matchWithError: ClientMatch,
-  matches: ClientMatch[]
+  matchWithError: RouteMatch,
+  matches: RouteMatch[]
 ): string | null {
   let nearestBoundaryId: null | string = null;
   for (let match of matches) {
-    if (match.route.CatchBoundary) {
+    // TODO: Fix API
+    if (match.route.exceptionElement) {
       nearestBoundaryId = match.route.id;
     }
+    // if (match.route.CatchBoundary) {
+    //   nearestBoundaryId = match.route.id;
+    // }
 
     // only search parents (stop at throwing match)
     if (match === matchWithError) {
@@ -1622,14 +1629,18 @@ function findNearestCatchBoundary(
 }
 
 function findNearestBoundary(
-  matchWithError: ClientMatch,
-  matches: ClientMatch[]
+  matchWithError: RouteMatch,
+  matches: RouteMatch[]
 ): string | null {
   let nearestBoundaryId: null | string = null;
   for (let match of matches) {
-    if (match.route.ErrorBoundary) {
+    // TODO: Fix API
+    if (match.route.exceptionElement) {
       nearestBoundaryId = match.route.id;
     }
+    // if (match.route.ErrorBoundary) {
+    //   nearestBoundaryId = match.route.id;
+    // }
 
     // only search parents (stop at throwing match)
     if (match === matchWithError) {
@@ -1643,7 +1654,7 @@ function findNearestBoundary(
 function makeLoaderData(
   state: TransitionManagerState,
   results: DataResult[],
-  matches: ClientMatch[]
+  matches: RouteMatch[]
 ) {
   let newData: RouteData = {};
   for (let { match, value } of results) {

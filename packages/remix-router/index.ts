@@ -1,28 +1,96 @@
 import { Action, History, Location, Path, To } from "history";
 import { Action as NavigationType, parsePath } from "history";
 
-import type { Transition } from "./transition";
+import type { DataEvent, Transition } from "./transition";
 import { createTransitionManager, IDLE_TRANSITION } from "./transition";
-import type { RouteData, RouteMatch, RouteObject } from "./utils";
-import { normalizeSearch, matchRoutes, normalizeHash } from "./utils";
+import {
+  ParamParseKey,
+  Params,
+  PathMatch,
+  PathPattern,
+  RouteData,
+  RouteMatch,
+  RouteObject,
+} from "./utils";
+import {
+  generatePath,
+  invariant,
+  joinPaths,
+  matchPath,
+  matchRoutes,
+  normalizePathname,
+  normalizeSearch,
+  normalizeHash,
+  stripBasename,
+  warning,
+  warningOnce,
+} from "./utils";
+
+// Re-exports for router usages
+export type {
+  ParamParseKey,
+  Params,
+  PathMatch,
+  PathPattern,
+  RouteMatch,
+  RouteObject,
+};
+export {
+  generatePath,
+  invariant,
+  joinPaths,
+  matchPath,
+  matchRoutes,
+  normalizeHash,
+  normalizePathname,
+  normalizeSearch,
+  stripBasename,
+  warning,
+  warningOnce,
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 //#region REMIX ROUTER
 ////////////////////////////////////////////////////////////////////////////////
 
 export interface AppState {
-  // Proxied from history
+  /**
+   * The most recent navigation action performed
+   */
   action: NavigationType;
+
+  /**
+   * The current location according to the history stack
+   */
   location: Location;
-  // Proxied from prior transition manager state
+
+  /**
+   * The current transition state
+   */
   transition: Transition;
-  // Potentially hydrated from server render
-  loaderData: RouteData | null;
-  actionData: RouteData | null;
-  exception: RouteData | null;
-  // SPA-transitions:
-  // transition: Transition
+
+  /**
+   * Data from the loaders that user sees in the browser. During a transition
+   * this is the "old" data, unless there are multiple pending forms, in which
+   * case this may be updated as fresh data loads complete
+   */
+  loaderData: RouteData;
+
+  /**
+   * Holds the action data for the latest NormalPostSubmission
+   */
+  actionData?: RouteData;
+
+  /**
+   * Exception thrown from loader/action/render
+   */
+  exception?: RouteData;
 }
+
+export type HydrationState = Pick<
+  AppState,
+  "loaderData" | "actionData" | "exception"
+>;
 
 export interface NavigateOptions {
   replace?: boolean;
@@ -44,7 +112,7 @@ export interface RemixRouter {
 export interface CreateRemixRouterOpts {
   history: History;
   routes: RouteObject[];
-  hydrationData?: AppState;
+  hydrationData?: HydrationState;
 }
 
 export function createRemixRouter({
@@ -55,14 +123,17 @@ export function createRemixRouter({
   let router: RemixRouter;
   let updater: () => void;
   let state: AppState = {
-    loaderData: null,
-    actionData: null,
-    exception: null,
+    loaderData: {},
     ...hydrationData,
     action: history.action,
     location: history.location,
     transition: IDLE_TRANSITION,
   };
+
+  // TODO: Abstract this into history top avoid window dep in transitionManager
+  // function createUrl(href: string) {
+  //   return new URL(href, window.location.origin);
+  // }
 
   let transitionManager = createTransitionManager({
     routes,
@@ -70,10 +141,12 @@ export function createRemixRouter({
     // TODO remove from transition manager
     loaderData: state.loaderData || {},
     actionData: state.actionData || {},
-    onChange: (newState) =>
+    // TODO - what to use as a base here?
+    createUrl: (href) => new URL(href, "remix://router"),
+    onChange: ({ transition, loaderData }) =>
       setState({
-        transition: newState.transition,
-        loaderData: newState.loaderData,
+        transition,
+        loaderData,
       }),
     onRedirect: (to, state) => router.navigate(to, { replace: true, state }),
   });
@@ -97,26 +170,8 @@ export function createRemixRouter({
     updater?.();
   }
 
-  function startTransition(to?: To, updateHistory?: () => void) {
-    let newPath = to
-      ? to
-      : {
-          pathname: history.location.pathname,
-          search: history.location.search,
-          hash: history.location.hash,
-        };
-    try {
-      let matches = router.matchRoutes(newPath);
-      if (!matches) {
-        throw new Response(null, { status: 404 });
-      }
-
-      // TODO: call loaders
-    } catch (e) {
-      throw e;
-      // TODO: Set error in state
-      // setState({ error: e });
-    }
+  async function startTransition(event: DataEvent, updateHistory?: () => void) {
+    await transitionManager.send(event);
     updateHistory?.();
     setState({
       action: history.action,
@@ -124,9 +179,13 @@ export function createRemixRouter({
     });
   }
 
-  // TODO: create flattened routes
-
-  history.listen(() => startTransition());
+  history.listen(() => {
+    startTransition({
+      type: "navigation",
+      action: Action.Pop,
+      location: history.location,
+    });
+  });
 
   router = {
     get state() {
@@ -137,8 +196,34 @@ export function createRemixRouter({
       return matchRoutes(routes, locationArg, basename);
     },
     navigate(path, opts = { replace: false, state: null }) {
-      let method: "replace" | "push" = opts.replace ? "replace" : "push";
-      startTransition(path, () => history[method](path, opts.state));
+      // TODO should remix router take over location generation from history
+      // so we can create keys before handing to transition manager?
+      // (for navigates only - history would handle for pop)
+      let location = {
+        pathname: "",
+        search: "",
+        hash: "",
+        ...(typeof path === "string" ? parsePath(path) : path),
+        state: opts.state ?? null,
+        key: "",
+      };
+      return opts.replace
+        ? startTransition(
+            {
+              type: "navigation",
+              action: Action.Replace,
+              location,
+            },
+            () => history.replace(path, opts.state)
+          )
+        : startTransition(
+            {
+              type: "navigation",
+              action: Action.Push,
+              location,
+            },
+            () => history.push(path, opts.state)
+          );
     },
     go(n) {
       history.go(n);
@@ -147,7 +232,6 @@ export function createRemixRouter({
       updater = cb;
       // TODO Return function to unregister
     },
-    // TODO: matchRoutes()
   };
   return router;
 }

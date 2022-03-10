@@ -94,6 +94,7 @@ export interface TransitionManagerInit {
   error?: Error;
   catchBoundaryId?: null | string;
   errorBoundaryId?: null | string;
+  createUrl: (href: string) => URL;
   onChange: (state: TransitionManagerState) => void;
   onRedirect: (to: string, state?: any) => void;
 }
@@ -667,8 +668,9 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
     console.debug(`[transition] fetcher calling loaders (key: ${key})`);
     let results = await callLoaders(
+      init,
       state,
-      createUrl(hrefToLoad),
+      init.createUrl(hrefToLoad),
       matchesToLoad,
       controller.signal,
       maybeActionErrorResult,
@@ -817,7 +819,11 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
     let controller = new AbortController();
     fetchControllers.set(key, controller);
-    let result = await callLoader(match, createUrl(href), controller.signal);
+    let result = await callLoader(
+      match,
+      init.createUrl(href),
+      controller.signal
+    );
     fetchControllers.delete(key);
 
     if (controller.signal.aborted) {
@@ -879,7 +885,11 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
     let controller = new AbortController();
     fetchControllers.set(key, controller);
-    let result = await callLoader(match, createUrl(href), controller.signal);
+    let result = await callLoader(
+      match,
+      init.createUrl(href),
+      controller.signal
+    );
 
     if (controller.signal.aborted) return;
     fetchControllers.delete(key);
@@ -1210,8 +1220,9 @@ export function createTransitionManager(init: TransitionManagerInit) {
 
     console.debug("[transition] calling loaders for loadPageData");
     let results = await callLoaders(
+      init,
       state,
-      createUrl(createHref(location)),
+      init.createUrl(createHref(location)),
       matches,
       controller.signal,
       maybeActionErrorResult,
@@ -1350,6 +1361,7 @@ function isIndexRequestAction(action: string) {
 }
 
 async function callLoaders(
+  init: TransitionManagerInit,
   state: TransitionManagerState,
   url: URL,
   matches: RouteMatch[],
@@ -1681,9 +1693,5 @@ function isCatchResult(result: DataResult): result is DataCatchResult {
 
 function isErrorResult(result: DataResult) {
   return result.value instanceof Error;
-}
-
-function createUrl(href: string) {
-  return new URL(href, window.location.origin);
 }
 //#endregion

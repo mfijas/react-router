@@ -1,7 +1,7 @@
 import { Action, History, Location, Path, To } from "history";
 import { Action as NavigationType, parsePath } from "history";
 
-import type { DataEvent, Transition } from "./transition";
+import type { NavigationEvent, Transition } from "./transition";
 import { createTransitionManager, IDLE_TRANSITION } from "./transition";
 import {
   ParamParseKey,
@@ -53,7 +53,7 @@ export {
 //#region REMIX ROUTER
 ////////////////////////////////////////////////////////////////////////////////
 
-export interface AppState {
+export interface State {
   /**
    * The most recent navigation action performed
    */
@@ -84,11 +84,16 @@ export interface AppState {
   /**
    * Exception thrown from loader/action/render
    */
-  exception?: RouteData;
+  exception?: any;
+
+  /**
+   * routeId for the nearest <Route> with an exceptionElement
+   */
+  exceptionBoundaryId?: string | null;
 }
 
 export type HydrationState = Pick<
-  AppState,
+  State,
   "loaderData" | "actionData" | "exception"
 >;
 
@@ -98,15 +103,15 @@ export interface NavigateOptions {
 }
 
 export interface RemixRouter {
-  state: AppState;
+  state: State;
   createHref: (to: To) => string;
   matchRoutes: (
     locationArg: Partial<Location> | string,
     basename?: string
   ) => RouteMatch[] | null;
-  navigate: (path: string | Path, opts?: NavigateOptions) => void;
+  navigate: (path: string | Path, opts?: NavigateOptions) => Promise<void>;
   go: (n: number) => void;
-  onUpdate: (cb: () => void) => void;
+  onUpdate: (cb: () => void) => () => void;
 }
 
 export interface CreateRemixRouterOpts {
@@ -119,10 +124,16 @@ export function createRemixRouter({
   history,
   routes,
   hydrationData,
-}: CreateRemixRouterOpts) {
+}: CreateRemixRouterOpts): RemixRouter {
   let router: RemixRouter;
-  let updater: () => void;
-  let state: AppState = {
+  let updater: (() => void) | undefined;
+  // Track the current in-flight transition action so we can update the state
+  // once the transition completes.  Interruptions will overwrite this such that
+  // we always complete with the most recent Action when we land back in an idle
+  // state.  This is an attempt to avoid having to pass action throughout all of
+  // the downstream transitionManager send() flows
+  let inProgressAction: Action;
+  let state: State = {
     loaderData: {},
     ...hydrationData,
     action: history.action,
@@ -130,7 +141,7 @@ export function createRemixRouter({
     transition: IDLE_TRANSITION,
   };
 
-  // TODO: Abstract this into history top avoid window dep in transitionManager
+  // TODO: Abstract this into history to avoid window dep in transitionManager
   // function createUrl(href: string) {
   //   return new URL(href, window.location.origin);
   // }
@@ -143,49 +154,54 @@ export function createRemixRouter({
     actionData: state.actionData || {},
     // TODO - what to use as a base here?
     createUrl: (href) => new URL(href, "remix://router"),
-    onChange: ({ transition, loaderData }) =>
-      setState({
-        transition,
-        loaderData,
-      }),
+    onChange: (tmState) => {
+      let updates: Partial<State> = {
+        transition: tmState.transition,
+        exception: tmState.exception,
+        exceptionBoundaryId: tmState.exceptionBoundaryId,
+      };
+
+      // If this completes a transition, commit the new action/location to state/history
+      // We can't do this from navigate or startTransition since they always resolve
+      // even if they were interrupted
+      if (tmState.transition === IDLE_TRANSITION) {
+        Object.assign(updates, {
+          action: inProgressAction,
+          location: tmState.location,
+          loaderData: tmState.loaderData,
+        });
+        // Update history if this was push/replace - do nothing if this was a pop
+        // since it'sa already been updated
+        if (inProgressAction === Action.Push) {
+          history.push(tmState.location);
+        } else if (inProgressAction === Action.Replace) {
+          history.replace(tmState.location);
+        }
+      }
+
+      state = {
+        ...state,
+        ...updates,
+      };
+      updater?.();
+    },
     onRedirect: (to, state) => router.navigate(to, { replace: true, state }),
   });
 
-  if (!hydrationData) {
-    let matches = matchRoutes(routes, history.location);
-    if (matches?.some((m) => m.route.loader)) {
-      transitionManager.send({
-        type: "navigation",
-        action: Action.Pop,
-        location: history.location,
-      });
-    }
-  }
-
-  function setState(newState: Partial<AppState>) {
-    state = {
-      ...state,
-      ...newState,
-    };
-    updater?.();
-  }
-
-  async function startTransition(event: DataEvent, updateHistory?: () => void) {
+  async function startTransition(event: NavigationEvent) {
+    inProgressAction = event.action;
     await transitionManager.send(event);
-    updateHistory?.();
-    setState({
-      action: history.action,
-      location: history.location,
-    });
   }
 
-  history.listen(() => {
+  history.listen(() =>
+    // Start the transition, but do not update state.  The transition manager
+    // will update router.state.location once the transition completes
     startTransition({
       type: "navigation",
       action: Action.Pop,
       location: history.location,
-    });
-  });
+    })
+  );
 
   router = {
     get state() {
@@ -195,7 +211,7 @@ export function createRemixRouter({
     matchRoutes(locationArg, basename) {
       return matchRoutes(routes, locationArg, basename);
     },
-    navigate(path, opts = { replace: false, state: null }) {
+    async navigate(path, opts = { replace: false, state: null }) {
       // TODO should remix router take over location generation from history
       // so we can create keys before handing to transition manager?
       // (for navigates only - history would handle for pop)
@@ -207,30 +223,21 @@ export function createRemixRouter({
         state: opts.state ?? null,
         key: "",
       };
-      return opts.replace
-        ? startTransition(
-            {
-              type: "navigation",
-              action: Action.Replace,
-              location,
-            },
-            () => history.replace(path, opts.state)
-          )
-        : startTransition(
-            {
-              type: "navigation",
-              action: Action.Push,
-              location,
-            },
-            () => history.push(path, opts.state)
-          );
+      let action = opts.replace ? Action.Replace : Action.Push;
+      await startTransition({
+        type: "navigation",
+        action,
+        location,
+      });
     },
     go(n) {
       history.go(n);
     },
     onUpdate(cb) {
       updater = cb;
-      // TODO Return function to unregister
+      return () => {
+        updater = undefined;
+      };
     },
   };
   return router;

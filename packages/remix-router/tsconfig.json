@@ -1,5 +1,5 @@
 {
-  "files": ["index.ts"],
+  "include": ["**/*.ts"],
   "compilerOptions": {
     "lib": ["ES2020"],
     "target": "ES2020",

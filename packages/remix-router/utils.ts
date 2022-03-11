@@ -1,6 +1,12 @@
 import type { Location } from "history";
 import { parsePath } from "history";
 
+export interface LoaderFunctionArgs {
+  request: Request;
+  params: Params;
+  signal: AbortSignal;
+}
+
 /**
  * Map of routeId -> data returned from a loader/action/exception
  */
@@ -20,7 +26,7 @@ export interface RouteObject {
   element?: React.ReactNode;
   index?: boolean;
   path?: string;
-  loader?: () => Promise<any>;
+  loader?: (obj: LoaderFunctionArgs) => Promise<any>;
   action?: () => Promise<any>;
   exceptionElement?: React.ReactNode;
   shouldReload?: () => boolean;
